@@ -1,0 +1,1129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DrowsyGuard — AI Driver Safety</title>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4.1633559619/face_mesh.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Exo+2:wght@300;400;700;900&display=swap" rel="stylesheet">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --bg: #04070d;
+  --surface: #080e1a;
+  --card: #0a1120;
+  --border: #162030;
+  --accent: #3b82f6;
+  --cyan: #06b6d4;
+  --danger: #ef4444;
+  --warn: #f59e0b;
+  --safe: #10b981;
+  --text: #94a3b8;
+  --bright: #e2e8f0;
+}
+
+body {
+  background: var(--bg);
+  font-family: 'Rajdhani', sans-serif;
+  color: var(--text);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* Animated BG particles */
+canvas#bgCanvas {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  opacity: 0.4;
+}
+
+/* Noise texture overlay */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
+  pointer-events: none;
+  z-index: 1;
+  opacity: 0.5;
+}
+
+/* ── HEADER ── */
+header {
+  position: relative;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 48px;
+  background: rgba(8,14,26,0.8);
+  backdrop-filter: blur(20px);
+  border-bottom: 1px solid var(--border);
+}
+
+.logo-wrap { display: flex; align-items: center; gap: 14px; }
+
+.logo-icon {
+  width: 42px; height: 42px;
+  background: linear-gradient(135deg, var(--accent), var(--cyan));
+  border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1.3rem;
+  box-shadow: 0 0 24px rgba(59,130,246,0.5);
+}
+
+.logo-text {
+  font-family: 'Exo 2', sans-serif;
+  font-weight: 900;
+  font-size: 1.5rem;
+  color: var(--bright);
+  letter-spacing: 1px;
+}
+
+.logo-text span { color: var(--cyan); }
+
+.logo-sub {
+  font-size: 0.7rem;
+  letter-spacing: 3px;
+  color: var(--text);
+  font-weight: 400;
+  margin-top: -4px;
+}
+
+.header-right { display: flex; align-items: center; gap: 24px; }
+
+.status-pill {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 18px;
+  background: rgba(16,185,129,0.1);
+  border: 1px solid rgba(16,185,129,0.3);
+  border-radius: 100px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 2px;
+  color: var(--safe);
+  transition: all 0.4s;
+}
+
+.status-pill.alert {
+  background: rgba(239,68,68,0.15);
+  border-color: rgba(239,68,68,0.5);
+  color: var(--danger);
+  box-shadow: 0 0 20px rgba(239,68,68,0.3);
+  animation: pillPulse 0.8s ease-in-out infinite alternate;
+}
+
+.status-pill.offline {
+  background: rgba(148,163,184,0.08);
+  border-color: rgba(148,163,184,0.2);
+  color: var(--text);
+}
+
+@keyframes pillPulse {
+  from { box-shadow: 0 0 10px rgba(239,68,68,0.3); }
+  to   { box-shadow: 0 0 30px rgba(239,68,68,0.6); }
+}
+
+.live-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: currentColor;
+  animation: blink 1.2s ease-in-out infinite;
+}
+
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+/* ── MAIN LAYOUT ── */
+main {
+  position: relative;
+  z-index: 10;
+  display: grid;
+  grid-template-columns: 1fr 380px;
+  gap: 24px;
+  padding: 28px 48px;
+  max-width: 1500px;
+  margin: 0 auto;
+}
+
+/* ── LEFT: Camera ── */
+.cam-col { display: flex; flex-direction: column; gap: 20px; }
+
+.cam-card {
+  position: relative;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  overflow: hidden;
+  aspect-ratio: 16/10;
+}
+
+/* Gradient border glow */
+.cam-card::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: 20px;
+  background: linear-gradient(135deg, rgba(59,130,246,0.4), transparent 40%, rgba(6,182,212,0.3));
+  z-index: 0;
+  pointer-events: none;
+}
+
+.cam-card video {
+  display: none; /* hidden — we draw it onto canvas instead */
+}
+
+canvas#overlay {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  z-index: 3;
+  border-radius: 20px;
+  display: block;
+}
+
+/* Scanning line animation */
+.scan-line {
+  position: absolute;
+  left: 0; right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--cyan), transparent);
+  box-shadow: 0 0 12px var(--cyan);
+  z-index: 4;
+  top: 0;
+  animation: scan 3s linear infinite;
+  opacity: 0;
+  transition: opacity 0.5s;
+}
+.scan-line.active { opacity: 1; }
+
+@keyframes scan {
+  0%   { top: 0%; }
+  100% { top: 100%; }
+}
+
+/* Corner brackets */
+.brackets { position: absolute; inset: 0; z-index: 5; pointer-events: none; }
+.brackets::before, .brackets::after,
+.brackets span::before, .brackets span::after {
+  content: '';
+  position: absolute;
+  width: 28px; height: 28px;
+}
+.brackets::before { top:16px; left:16px; border-top:2px solid var(--cyan); border-left:2px solid var(--cyan); border-radius:4px 0 0 0; }
+.brackets::after  { top:16px; right:16px; border-top:2px solid var(--cyan); border-right:2px solid var(--cyan); border-radius:0 4px 0 0; }
+.brackets span::before { bottom:16px; left:16px; border-bottom:2px solid var(--cyan); border-left:2px solid var(--cyan); border-radius:0 0 0 4px; }
+.brackets span::after  { bottom:16px; right:16px; border-bottom:2px solid var(--cyan); border-right:2px solid var(--cyan); border-radius:0 0 4px 0; }
+
+/* Start overlay */
+.start-overlay {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 24px;
+  background: rgba(4,7,13,0.92);
+  z-index: 20;
+  transition: opacity 0.5s, visibility 0.5s;
+  border-radius: 20px;
+}
+.start-overlay.gone { opacity: 0; visibility: hidden; pointer-events: none; }
+
+.start-ring {
+  width: 100px; height: 100px;
+  border-radius: 50%;
+  border: 2px solid rgba(59,130,246,0.3);
+  display: flex; align-items: center; justify-content: center;
+  position: relative;
+  animation: ringRotate 4s linear infinite;
+}
+.start-ring::before {
+  content: '';
+  position: absolute; inset: -6px;
+  border-radius: 50%;
+  border: 1px solid transparent;
+  border-top-color: var(--accent);
+  border-right-color: var(--cyan);
+  animation: ringRotate 2s linear infinite reverse;
+}
+.start-ring span { font-size: 2.8rem; }
+@keyframes ringRotate { to { transform: rotate(360deg); } }
+
+.start-title {
+  font-family: 'Exo 2', sans-serif;
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: var(--bright);
+  letter-spacing: 2px;
+  text-align: center;
+}
+
+.start-desc {
+  font-size: 0.85rem;
+  color: var(--text);
+  text-align: center;
+  line-height: 1.8;
+  letter-spacing: 1px;
+  max-width: 300px;
+}
+
+.btn-launch {
+  font-family: 'Exo 2', sans-serif;
+  font-weight: 700;
+  font-size: 0.9rem;
+  letter-spacing: 3px;
+  color: #fff;
+  background: linear-gradient(135deg, var(--accent), var(--cyan));
+  border: none;
+  padding: 16px 40px;
+  border-radius: 12px;
+  cursor: pointer;
+  position: relative;
+  overflow: hidden;
+  transition: transform 0.2s, box-shadow 0.2s;
+  text-transform: uppercase;
+}
+.btn-launch::before {
+  content: '';
+  position: absolute; inset: 0;
+  background: linear-gradient(135deg, rgba(255,255,255,0.2), transparent);
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.btn-launch:hover { transform: translateY(-3px); box-shadow: 0 12px 40px rgba(59,130,246,0.5); }
+.btn-launch:hover::before { opacity: 1; }
+.btn-launch:active { transform: translateY(0); }
+
+/* No-face badge */
+.no-face-badge {
+  position: absolute; bottom: 20px; left: 50%;
+  transform: translateX(-50%);
+  background: rgba(245,158,11,0.15);
+  border: 1px solid rgba(245,158,11,0.4);
+  color: var(--warn);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 2px;
+  padding: 8px 20px;
+  border-radius: 100px;
+  z-index: 6;
+  display: none;
+  white-space: nowrap;
+}
+
+/* DROWSY ALERT FLASH */
+.drowsy-flash {
+  position: absolute; inset: 0;
+  background: rgba(239,68,68,0.12);
+  z-index: 4;
+  opacity: 0;
+  border-radius: 20px;
+  transition: opacity 0.2s;
+  pointer-events: none;
+}
+.drowsy-flash.on { opacity: 1; animation: flash 0.6s ease-in-out infinite alternate; }
+@keyframes flash { from{opacity:0.05} to{opacity:0.2} }
+
+/* ── ALERT BANNER ── */
+.alert-bar {
+  display: flex; align-items: center; gap: 16px;
+  padding: 16px 24px;
+  background: rgba(16,185,129,0.08);
+  border: 1px solid rgba(16,185,129,0.25);
+  border-radius: 14px;
+  transition: all 0.4s;
+}
+.alert-bar.danger {
+  background: rgba(239,68,68,0.1);
+  border-color: rgba(239,68,68,0.4);
+  box-shadow: 0 0 30px rgba(239,68,68,0.2);
+  animation: barPulse 0.7s ease-in-out infinite alternate;
+}
+@keyframes barPulse {
+  from { box-shadow: 0 0 15px rgba(239,68,68,0.15); }
+  to   { box-shadow: 0 0 40px rgba(239,68,68,0.35); }
+}
+
+.alert-icon-wrap {
+  width: 44px; height: 44px; border-radius: 12px;
+  background: rgba(16,185,129,0.15);
+  border: 1px solid rgba(16,185,129,0.3);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1.3rem;
+  flex-shrink: 0;
+  transition: all 0.3s;
+}
+.alert-bar.danger .alert-icon-wrap {
+  background: rgba(239,68,68,0.15);
+  border-color: rgba(239,68,68,0.4);
+}
+
+.alert-texts {}
+.alert-head {
+  font-family: 'Exo 2', sans-serif;
+  font-weight: 700;
+  font-size: 1rem;
+  color: var(--safe);
+  letter-spacing: 1px;
+  transition: color 0.3s;
+}
+.alert-bar.danger .alert-head { color: var(--danger); }
+.alert-sub {
+  font-size: 0.8rem;
+  color: var(--text);
+  letter-spacing: 0.5px;
+  margin-top: 2px;
+}
+
+/* ── RIGHT SIDEBAR ── */
+.sidebar { display: flex; flex-direction: column; gap: 18px; }
+
+/* Card */
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 22px;
+}
+
+.card-title {
+  font-family: 'Exo 2', sans-serif;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 3px;
+  color: var(--text);
+  text-transform: uppercase;
+  margin-bottom: 18px;
+  display: flex; align-items: center; gap: 8px;
+}
+.card-title::before {
+  content: '';
+  width: 3px; height: 14px;
+  background: linear-gradient(to bottom, var(--accent), var(--cyan));
+  border-radius: 2px;
+}
+
+/* EAR Big Number */
+.ear-big {
+  display: flex; align-items: baseline; gap: 8px;
+  margin-bottom: 12px;
+}
+.ear-num {
+  font-family: 'Exo 2', sans-serif;
+  font-size: 3.5rem;
+  font-weight: 900;
+  color: var(--safe);
+  line-height: 1;
+  transition: color 0.3s;
+  text-shadow: 0 0 30px currentColor;
+}
+.ear-num.warn { color: var(--warn); }
+.ear-num.danger { color: var(--danger); }
+.ear-unit { font-size: 0.85rem; color: var(--text); letter-spacing: 2px; }
+
+/* Progress bar */
+.bar-wrap {
+  position: relative;
+  height: 10px;
+  background: rgba(255,255,255,0.05);
+  border-radius: 100px;
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+.bar-fill {
+  height: 100%;
+  border-radius: 100px;
+  background: linear-gradient(90deg, var(--danger) 0%, var(--warn) 40%, var(--safe) 70%);
+  background-size: 300% 100%;
+  transition: width 0.15s ease;
+  width: 50%;
+}
+.bar-threshold {
+  position: absolute;
+  top: -3px; bottom: -3px;
+  width: 2px;
+  background: rgba(255,255,255,0.5);
+  left: 41.7%; /* 0.25/0.6 */
+  border-radius: 2px;
+}
+.bar-label {
+  display: flex; justify-content: space-between;
+  font-size: 0.7rem;
+  color: var(--text);
+  letter-spacing: 1px;
+  margin-top: 4px;
+}
+
+/* Frame accumulator */
+.frame-wrap {
+  margin-top: 14px;
+}
+.frame-label {
+  display: flex; justify-content: space-between;
+  font-size: 0.72rem;
+  color: var(--text);
+  letter-spacing: 1px;
+  margin-bottom: 6px;
+}
+.frame-track {
+  height: 6px;
+  background: rgba(255,255,255,0.05);
+  border-radius: 100px;
+  overflow: hidden;
+}
+.frame-bar {
+  height: 100%;
+  border-radius: 100px;
+  background: linear-gradient(90deg, var(--accent), var(--warn));
+  width: 0%;
+  transition: width 0.1s, background 0.3s;
+}
+.frame-bar.full { background: linear-gradient(90deg, var(--warn), var(--danger)); }
+
+/* Stats grid */
+.stats-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.stat {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  text-align: center;
+  transition: border-color 0.3s;
+}
+.stat:hover { border-color: rgba(59,130,246,0.3); }
+
+.stat-val {
+  font-family: 'Exo 2', sans-serif;
+  font-size: 2rem;
+  font-weight: 900;
+  line-height: 1;
+  margin-bottom: 6px;
+}
+.stat-lbl {
+  font-size: 0.65rem;
+  letter-spacing: 2px;
+  color: var(--text);
+  text-transform: uppercase;
+}
+
+#sv-events { color: var(--danger); text-shadow: 0 0 20px rgba(239,68,68,0.5); }
+#sv-frames { color: var(--warn); text-shadow: 0 0 20px rgba(245,158,11,0.4); }
+#sv-session { color: var(--cyan); text-shadow: 0 0 20px rgba(6,182,212,0.4); }
+#sv-fps { color: var(--safe); text-shadow: 0 0 20px rgba(16,185,129,0.4); }
+
+/* Sliders */
+.slider-row { margin-bottom: 16px; }
+.slider-row:last-of-type { margin-bottom: 0; }
+.slider-lbl {
+  display: flex; justify-content: space-between;
+  font-size: 0.75rem;
+  letter-spacing: 1px;
+  margin-bottom: 8px;
+}
+.slider-lbl span:last-child {
+  font-family: 'Exo 2', sans-serif;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+input[type=range] {
+  -webkit-appearance: none;
+  width: 100%;
+  height: 4px;
+  border-radius: 100px;
+  background: linear-gradient(90deg, var(--accent) 0%, var(--border) 0%);
+  outline: none;
+  cursor: pointer;
+}
+input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 10px rgba(59,130,246,0.6);
+  cursor: pointer;
+  transition: transform 0.2s;
+}
+input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.3); }
+
+.btn-mute {
+  width: 100%;
+  margin-top: 14px;
+  font-family: 'Rajdhani', sans-serif;
+  font-weight: 600;
+  font-size: 0.85rem;
+  letter-spacing: 2px;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+  padding: 11px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.2s;
+  text-transform: uppercase;
+}
+.btn-mute:hover { border-color: var(--accent); color: var(--accent); }
+.btn-mute.muted { border-color: var(--danger); color: var(--danger); }
+
+/* Event log */
+.log-box {
+  max-height: 150px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.log-box::-webkit-scrollbar { width: 3px; }
+.log-box::-webkit-scrollbar-thumb { background: var(--border); border-radius: 10px; }
+
+.log-item {
+  font-size: 0.72rem;
+  letter-spacing: 0.5px;
+  padding: 7px 12px;
+  border-radius: 8px;
+  background: rgba(255,255,255,0.03);
+  border-left: 3px solid var(--border);
+  color: var(--text);
+  animation: logIn 0.3s ease;
+  line-height: 1.5;
+}
+.log-item.ev-danger { border-color: var(--danger); color: #fca5a5; background: rgba(239,68,68,0.06); }
+.log-item.ev-info   { border-color: var(--accent); }
+.log-item.ev-safe   { border-color: var(--safe);   color: #6ee7b7; }
+@keyframes logIn { from{opacity:0;transform:translateY(-6px)} to{opacity:1;transform:none} }
+
+/* ── FOOTER ── */
+footer {
+  position: relative; z-index: 10;
+  text-align: center;
+  padding: 20px;
+  font-size: 0.72rem;
+  color: rgba(148,163,184,0.4);
+  letter-spacing: 2px;
+  border-top: 1px solid var(--border);
+}
+
+/* ── RESPONSIVE ── */
+@media(max-width:1000px){
+  main { grid-template-columns: 1fr; padding: 20px 24px; }
+  .sidebar { display: grid; grid-template-columns: 1fr 1fr; }
+  header { padding: 16px 24px; }
+}
+@media(max-width:640px){
+  .sidebar { grid-template-columns: 1fr; }
+  .stats-grid { grid-template-columns: 1fr 1fr; }
+  .logo-text { font-size: 1.1rem; }
+}
+</style>
+</head>
+<body>
+
+<!-- Particle background canvas -->
+<canvas id="bgCanvas"></canvas>
+
+<!-- ── HEADER ── -->
+<header>
+  <div class="logo-wrap">
+    <div class="logo-icon">👁</div>
+    <div>
+      <div class="logo-text">Drowsy<span>Guard</span></div>
+      <div class="logo-sub">AI DRIVER SAFETY SYSTEM</div>
+    </div>
+  </div>
+  <div class="header-right">
+    <div class="status-pill offline" id="status-pill">
+      <div class="live-dot"></div>
+      <span id="status-label">OFFLINE</span>
+    </div>
+  </div>
+</header>
+
+<!-- ── MAIN ── -->
+<main>
+
+  <!-- LEFT: Camera -->
+  <div class="cam-col">
+    <div class="cam-card" id="cam-card">
+      <div class="drowsy-flash" id="drowsy-flash"></div>
+      <div class="scan-line" id="scan-line"></div>
+      <video id="webcam" autoplay playsinline muted></video>
+      <canvas id="overlay"></canvas>
+      <div class="brackets"><span></span></div>
+      <div class="no-face-badge" id="no-face">⚠ NO FACE DETECTED</div>
+
+      <!-- Start overlay -->
+      <div class="start-overlay" id="start-overlay">
+        <div class="start-ring"><span>👁</span></div>
+        <div>
+          <div class="start-title">DROWSINESS DETECTION</div>
+          <div class="start-desc" style="margin-top:10px">
+            AI-powered real-time eye tracking using<br>
+            MediaPipe FaceMesh &amp; Eye Aspect Ratio
+          </div>
+        </div>
+        <button class="btn-launch" onclick="startDetection()">▶ LAUNCH SYSTEM</button>
+        <div style="font-size:0.7rem;color:rgba(148,163,184,0.5);letter-spacing:2px">
+          CAMERA PERMISSION REQUIRED
+        </div>
+      </div>
+    </div>
+
+    <!-- Alert bar -->
+    <div class="alert-bar" id="alert-bar">
+      <div class="alert-icon-wrap" id="alert-icon">✅</div>
+      <div class="alert-texts">
+        <div class="alert-head" id="alert-head">DRIVER IS ALERT</div>
+        <div class="alert-sub" id="alert-sub">Eye activity within normal parameters — stay focused</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT: Sidebar -->
+  <div class="sidebar">
+
+    <!-- EAR Monitor -->
+    <div class="card">
+      <div class="card-title">Eye Aspect Ratio</div>
+      <div class="ear-big">
+        <div class="ear-num" id="ear-num">—</div>
+        <div class="ear-unit">EAR</div>
+      </div>
+      <div class="bar-wrap">
+        <div class="bar-fill" id="ear-bar" style="width:0%"></div>
+        <div class="bar-threshold"></div>
+      </div>
+      <div class="bar-label">
+        <span>0.00 CLOSED</span>
+        <span>▲ 0.25 THRESHOLD</span>
+        <span>0.60 OPEN</span>
+      </div>
+      <div class="frame-wrap">
+        <div class="frame-label">
+          <span>CLOSED-EYE ACCUMULATOR</span>
+          <span id="frame-count">0 / 15</span>
+        </div>
+        <div class="frame-track">
+          <div class="frame-bar" id="frame-bar"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Stats -->
+    <div class="card">
+      <div class="card-title">Live Metrics</div>
+      <div class="stats-grid">
+        <div class="stat">
+          <div class="stat-val" id="sv-events">0</div>
+          <div class="stat-lbl">Fatigue Events</div>
+        </div>
+        <div class="stat">
+          <div class="stat-val" id="sv-frames">0</div>
+          <div class="stat-lbl">Frame Count</div>
+        </div>
+        <div class="stat">
+          <div class="stat-val" id="sv-session">0:00</div>
+          <div class="stat-lbl">Session Time</div>
+        </div>
+        <div class="stat">
+          <div class="stat-val" id="sv-fps">—</div>
+          <div class="stat-lbl">FPS</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Settings -->
+    <div class="card">
+      <div class="card-title">Configuration</div>
+      <div class="slider-row">
+        <div class="slider-lbl">
+          <span>EAR THRESHOLD</span>
+          <span id="lbl-ear">0.25</span>
+        </div>
+        <input type="range" id="sl-ear" min="0.15" max="0.40" step="0.01" value="0.25"
+          oninput="EAR_THRESHOLD=+this.value;document.getElementById('lbl-ear').textContent=this.value;updateSliderBg(this)">
+      </div>
+      <div class="slider-row">
+        <div class="slider-lbl">
+          <span>DROWSY FRAME LIMIT</span>
+          <span id="lbl-fr">15</span>
+        </div>
+        <input type="range" id="sl-fr" min="5" max="45" step="1" value="15"
+          oninput="DROWSY_FRAMES=+this.value;document.getElementById('lbl-fr').textContent=this.value;updateSliderBg(this)">
+      </div>
+      <button class="btn-mute" id="btn-mute" onclick="toggleMute()">🔊 ALARM ENABLED</button>
+    </div>
+
+    <!-- Event Log -->
+    <div class="card">
+      <div class="card-title">Event Log</div>
+      <div class="log-box" id="log-box">
+        <div class="log-item ev-info">System ready. Click launch to begin.</div>
+      </div>
+    </div>
+
+  </div>
+</main>
+
+<footer>DROWSYGUARD &nbsp;·&nbsp; AI-POWERED DRIVER SAFETY &nbsp;·&nbsp; RUNS ENTIRELY IN YOUR BROWSER</footer>
+
+<script>
+// ── CONFIG ──
+const LEFT_EYE  = [33,160,158,133,153,144];
+const RIGHT_EYE = [362,385,387,263,373,380];
+let EAR_THRESHOLD = 0.25;
+let DROWSY_FRAMES  = 15;
+
+let frameCounter   = 0;
+let fatigueCount   = 0;
+let alertTriggered = false;
+let muted          = false;
+let running        = false;
+let startTime      = null;
+let lastT          = performance.now();
+
+// ── PARTICLES BG ──
+(function(){
+  const c  = document.getElementById('bgCanvas');
+  const cx = c.getContext('2d');
+  let W, H, pts = [];
+
+  function resize(){
+    W = c.width  = window.innerWidth;
+    H = c.height = window.innerHeight;
+  }
+
+  function initPts(){
+    pts = [];
+    const n = Math.floor((W * H) / 18000);
+    for(let i=0;i<n;i++){
+      pts.push({
+        x: Math.random()*W, y: Math.random()*H,
+        vx:(Math.random()-0.5)*0.3, vy:(Math.random()-0.5)*0.3,
+        r: Math.random()*1.5+0.5,
+        a: Math.random()
+      });
+    }
+  }
+
+  function draw(){
+    cx.clearRect(0,0,W,H);
+    pts.forEach(p=>{
+      p.x+=p.vx; p.y+=p.vy;
+      if(p.x<0)p.x=W; if(p.x>W)p.x=0;
+      if(p.y<0)p.y=H; if(p.y>H)p.y=0;
+      cx.beginPath();
+      cx.arc(p.x,p.y,p.r,0,Math.PI*2);
+      cx.fillStyle=`rgba(59,130,246,${p.a*0.6})`;
+      cx.fill();
+    });
+    // Connect nearby
+    for(let i=0;i<pts.length;i++){
+      for(let j=i+1;j<pts.length;j++){
+        const dx=pts[i].x-pts[j].x, dy=pts[i].y-pts[j].y;
+        const d=Math.hypot(dx,dy);
+        if(d<120){
+          cx.beginPath();
+          cx.moveTo(pts[i].x,pts[i].y);
+          cx.lineTo(pts[j].x,pts[j].y);
+          cx.strokeStyle=`rgba(59,130,246,${(1-d/120)*0.15})`;
+          cx.lineWidth=0.5;
+          cx.stroke();
+        }
+      }
+    }
+    requestAnimationFrame(draw);
+  }
+
+  window.addEventListener('resize',()=>{resize();initPts();});
+  resize(); initPts(); draw();
+})();
+
+// ── SLIDER BG ──
+function updateSliderBg(el){
+  const pct = ((el.value - el.min)/(el.max - el.min))*100;
+  el.style.background = `linear-gradient(90deg, var(--accent) ${pct}%, var(--border) ${pct}%)`;
+}
+document.querySelectorAll('input[type=range]').forEach(updateSliderBg);
+
+// ── AUDIO ──
+let audioCtx = null;
+function getCtx(){ return audioCtx || (audioCtx = new(window.AudioContext||window.webkitAudioContext)()); }
+
+function playAlarm(){
+  if(muted) return;
+  const ctx = getCtx();
+  [0, 0.18, 0.36, 0.54].forEach(t => {
+    const osc  = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(1046, ctx.currentTime+t);
+    osc.frequency.linearRampToValueAtTime(698, ctx.currentTime+t+0.09);
+    gain.gain.setValueAtTime(0.45, ctx.currentTime+t);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime+t+0.18);
+    osc.start(ctx.currentTime+t);
+    osc.stop(ctx.currentTime+t+0.18);
+  });
+}
+
+function toggleMute(){
+  muted = !muted;
+  const b = document.getElementById('btn-mute');
+  b.textContent = muted ? '🔇 ALARM MUTED' : '🔊 ALARM ENABLED';
+  b.classList.toggle('muted', muted);
+}
+
+// ── EAR ──
+function calcEAR(idx, lm){
+  const p = idx.map(i=>lm[i]);
+  const d = (a,b) => Math.hypot(a.x-b.x, a.y-b.y);
+  return (d(p[1],p[5]) + d(p[2],p[4])) / (2*d(p[0],p[3]));
+}
+
+// ── LOGGING ──
+function log(msg, cls=''){
+  const box  = document.getElementById('log-box');
+  const item = document.createElement('div');
+  const ts   = new Date().toLocaleTimeString('en-US',{hour12:false});
+  item.className = `log-item ${cls}`;
+  item.textContent = `[${ts}] ${msg}`;
+  box.prepend(item);
+  while(box.children.length > 40) box.removeChild(box.lastChild);
+}
+
+// ── UI UPDATE ──
+function updateUI(ear, face){
+  // FPS
+  const now = performance.now();
+  document.getElementById('sv-fps').textContent = Math.round(1000/(now-lastT));
+  lastT = now;
+
+  // Session
+  if(startTime){
+    const s = Math.floor((Date.now()-startTime)/1000);
+    document.getElementById('sv-session').textContent =
+      `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;
+  }
+
+  const noFace = document.getElementById('no-face');
+
+  if(!face){
+    document.getElementById('ear-num').textContent = '—';
+    document.getElementById('ear-bar').style.width  = '0%';
+    noFace.style.display = 'block';
+    document.getElementById('sv-frames').textContent = frameCounter;
+    return;
+  }
+  noFace.style.display = 'none';
+
+  // EAR number + color
+  const earEl = document.getElementById('ear-num');
+  earEl.textContent = ear.toFixed(3);
+  earEl.className = ear < EAR_THRESHOLD ? 'ear-num danger'
+                  : ear < EAR_THRESHOLD+0.06 ? 'ear-num warn'
+                  : 'ear-num';
+
+  // EAR bar (0 – 0.6 range)
+  document.getElementById('ear-bar').style.width = Math.min(ear/0.6,1)*100+'%';
+
+  // Frame bar
+  const fp  = Math.min(frameCounter/DROWSY_FRAMES,1)*100;
+  const fb  = document.getElementById('frame-bar');
+  fb.style.width = fp+'%';
+  fb.classList.toggle('full', frameCounter >= DROWSY_FRAMES);
+  document.getElementById('frame-count').textContent = `${frameCounter} / ${DROWSY_FRAMES}`;
+
+  document.getElementById('sv-frames').textContent  = frameCounter;
+  document.getElementById('sv-events').textContent  = fatigueCount;
+
+  // Alert states
+  const bar   = document.getElementById('alert-bar');
+  const pill  = document.getElementById('status-pill');
+  const flash = document.getElementById('drowsy-flash');
+  const isDrowsy = frameCounter > DROWSY_FRAMES;
+
+  if(isDrowsy){
+    bar.className  = 'alert-bar danger';
+    document.getElementById('alert-icon').textContent = '🚨';
+    document.getElementById('alert-head').textContent = '⚠ DROWSINESS DETECTED';
+    document.getElementById('alert-sub').textContent  = `Eyes closed for ${frameCounter} frames — WAKE UP NOW!`;
+    pill.className = 'status-pill alert';
+    document.getElementById('status-label').textContent = 'DROWSY ALERT';
+    flash.className = 'drowsy-flash on';
+  } else {
+    bar.className  = 'alert-bar';
+    document.getElementById('alert-icon').textContent = '✅';
+    document.getElementById('alert-head').textContent = 'DRIVER IS ALERT';
+    document.getElementById('alert-sub').textContent  = 'Eye activity within normal parameters — stay focused';
+    pill.className = 'status-pill';
+    document.getElementById('status-label').textContent = 'MONITORING';
+    flash.className = 'drowsy-flash';
+  }
+}
+
+// ── START ──
+async function startDetection(){
+  getCtx().resume();
+  const video  = document.getElementById('webcam');
+  const canvas = document.getElementById('overlay');
+  const ctx2d  = canvas.getContext('2d');
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video:{ facingMode:'user', width:1280, height:720 }
+    });
+    video.srcObject = stream;
+    await video.play();
+  } catch(e){
+    log('Camera denied: '+e.message, 'ev-danger');
+    alert('Please allow camera access and try again.');
+    return;
+  }
+
+  document.getElementById('start-overlay').classList.add('gone');
+  document.getElementById('scan-line').classList.add('active');
+  document.getElementById('status-pill').className = 'status-pill';
+  document.getElementById('status-label').textContent = 'MONITORING';
+  running   = true;
+  startTime = Date.now();
+  log('System online. Camera active.', 'ev-safe');
+  log('MediaPipe FaceMesh initializing…', 'ev-info');
+
+  // FaceMesh init
+  const fm = new FaceMesh({
+    locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4.1633559619/${f}`
+  });
+  fm.setOptions({
+    maxNumFaces:1,
+    refineLandmarks:true,
+    minDetectionConfidence:0.5,
+    minTrackingConfidence:0.5
+  });
+
+  fm.onResults(results => {
+    const W = video.videoWidth  || 640;
+    const H = video.videoHeight || 480;
+    canvas.width  = W;
+    canvas.height = H;
+
+    // ── Draw mirrored webcam feed first ──
+    ctx2d.save();
+    ctx2d.translate(W, 0);
+    ctx2d.scale(-1, 1);
+    ctx2d.drawImage(video, 0, 0, W, H);
+    ctx2d.restore();
+
+    // Dark vignette overlay for style
+    const vignette = ctx2d.createRadialGradient(W/2, H/2, H*0.3, W/2, H/2, H*0.85);
+    vignette.addColorStop(0, 'rgba(0,0,0,0)');
+    vignette.addColorStop(1, 'rgba(0,0,0,0.55)');
+    ctx2d.fillStyle = vignette;
+    ctx2d.fillRect(0, 0, W, H);
+
+    const raw = results.multiFaceLandmarks?.[0]?.landmark
+             || results.multiFaceLandmarks?.[0];
+
+    if(!raw || !raw.length){
+      frameCounter   = 0;
+      alertTriggered = false;
+      updateUI(0, false);
+      return;
+    }
+
+    const lm = Array.isArray(raw) ? raw : Object.values(raw);
+
+    // ── Draw glowing eye outlines ──
+    const drawEye = (idx, col) => {
+      // Glow pass
+      ctx2d.strokeStyle = col;
+      ctx2d.lineWidth   = 4;
+      ctx2d.globalAlpha = 0.3;
+      ctx2d.shadowColor = col;
+      ctx2d.shadowBlur  = 16;
+      ctx2d.beginPath();
+      idx.forEach((i,j)=>{
+        const x=(1-lm[i].x)*W, y=lm[i].y*H;
+        j===0 ? ctx2d.moveTo(x,y) : ctx2d.lineTo(x,y);
+      });
+      ctx2d.closePath();
+      ctx2d.stroke();
+      // Crisp pass
+      ctx2d.globalAlpha = 1;
+      ctx2d.lineWidth   = 1.8;
+      ctx2d.shadowBlur  = 6;
+      ctx2d.beginPath();
+      idx.forEach((i,j)=>{
+        const x=(1-lm[i].x)*W, y=lm[i].y*H;
+        j===0 ? ctx2d.moveTo(x,y) : ctx2d.lineTo(x,y);
+      });
+      ctx2d.closePath();
+      ctx2d.stroke();
+      ctx2d.shadowBlur = 0;
+      // Dots
+      idx.forEach(i=>{
+        ctx2d.beginPath();
+        ctx2d.arc((1-lm[i].x)*W, lm[i].y*H, 3.5, 0, Math.PI*2);
+        ctx2d.fillStyle = col;
+        ctx2d.shadowColor = col; ctx2d.shadowBlur = 10;
+        ctx2d.fill();
+        ctx2d.shadowBlur = 0;
+      });
+    };
+
+    const ear      = (calcEAR(LEFT_EYE,lm) + calcEAR(RIGHT_EYE,lm)) / 2;
+    const eyeColor = ear < EAR_THRESHOLD ? '#ef4444' : '#06b6d4';
+    drawEye(LEFT_EYE,  eyeColor);
+    drawEye(RIGHT_EYE, eyeColor);
+
+    // ── HUD text on video ──
+    // EAR badge bottom-left
+    ctx2d.font = 'bold 15px Rajdhani, sans-serif';
+    ctx2d.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx2d.fillRoundRect?.(12, H-44, 160, 30, 6) || ctx2d.fillRect(12, H-44, 160, 30);
+    ctx2d.fillStyle = eyeColor;
+    ctx2d.shadowColor = eyeColor; ctx2d.shadowBlur = 8;
+    ctx2d.fillText(`EAR: ${ear.toFixed(3)}`, 22, H-23);
+    ctx2d.shadowBlur = 0;
+
+    // Status badge top-right
+    if(frameCounter > DROWSY_FRAMES){
+      ctx2d.font = 'bold 14px Rajdhani, sans-serif';
+      ctx2d.fillStyle = 'rgba(239,68,68,0.85)';
+      ctx2d.fillRect(W-160, 14, 146, 30);
+      ctx2d.fillStyle = '#fff';
+      ctx2d.fillText('⚠ DROWSY ALERT', W-152, 34);
+    }
+
+    // Drowsiness logic
+    if(ear < EAR_THRESHOLD){
+      frameCounter++;
+    } else {
+      frameCounter   = 0;
+      alertTriggered = false;
+    }
+
+    if(frameCounter > DROWSY_FRAMES && !alertTriggered){
+      fatigueCount++;
+      alertTriggered = true;
+      playAlarm();
+      log(`DROWSY EVENT #${fatigueCount} — EAR: ${ear.toFixed(3)}`, 'ev-danger');
+    }
+
+    updateUI(ear, true);
+  });
+
+  // Frame loop
+  (async function loop(){
+    if(!running) return;
+    if(video.readyState >= 2) await fm.send({image:video});
+    requestAnimationFrame(loop);
+  })();
+
+  log('Face detection active.', 'ev-safe');
+}
+</script>
+</body>
+</html>
